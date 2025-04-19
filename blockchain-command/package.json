@@ -1,0 +1,14 @@
+{
+  "name": "fartmachine-blockchain-trigger",
+  "version": "1.0.0",
+  "description": "Monitors Solana transactions and triggers the solenoid directly",
+  "main": "trigger.js",
+  "scripts": {
+    "start": "node trigger.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.87.6",
+    "serialport": "^10.5.0",
+    "ws": "^8.14.2"
+  }
+}
