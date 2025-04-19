@@ -1,12 +1,29 @@
 // trigger.js - Monitors Solana transactions and triggers the solenoid when transactions are detected
 const { SerialPort } = require('serialport');
 const { Connection, PublicKey } = require('@solana/web3.js');
+const { ReadlineParser } = require('@serialport/parser-readline');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 // Configuration
 const CONTRACT_ADDRESS = '6cPCHGuxD4G7k69R9UwWDUUGHDJMpZuRWDpd26Mqpump'; // Hardcoded contract address
 const HELIUS_RPC_URL = 'https://mainnet.helius-rpc.com/?api-key=ad13694f-03a7-404e-90d8-3456707ed63a';
-const SERIAL_PORT = '/dev/tty.usbmodem21401'; // Update this to match your Arduino's port
 const BAUD_RATE = 9600;
+
+// Platform-specific serial port paths
+const SERIAL_PORT_PATHS = {
+  darwin: [
+    '/dev/tty.usbmodem*',
+    '/dev/tty.usbserial*'
+  ],
+  linux: [
+    '/dev/ttyACM0',
+    '/dev/ttyACM1',
+    '/dev/ttyUSB0',
+    '/dev/ttyUSB1'
+  ]
+};
 
 // Initialize Solana connection
 const connection = new Connection(HELIUS_RPC_URL);
@@ -15,24 +32,105 @@ const contractPubkey = new PublicKey(CONTRACT_ADDRESS);
 // Track last transaction to avoid duplicates
 let lastTransactionSignature = null;
 let serialPort = null;
+let parser = null;
+
+// Function to detect available serial ports
+async function findArduinoPort() {
+  try {
+    // Determine platform (darwin = macOS, linux = Linux including Jetson)
+    const platform = os.platform();
+    console.log(`Detected platform: ${platform}`);
+    
+    // Get list of available ports
+    const availablePorts = await SerialPort.list();
+    console.log('Available ports:', availablePorts.map(p => p.path).join(', '));
+    
+    // Try to find Arduino port
+    let arduinoPort = null;
+    
+    // First look for Arduino in the available ports
+    for (const port of availablePorts) {
+      if (port.manufacturer && port.manufacturer.toLowerCase().includes('arduino')) {
+        arduinoPort = port.path;
+        console.log(`Found Arduino port by manufacturer: ${arduinoPort}`);
+        break;
+      }
+    }
+    
+    // If not found by manufacturer, try platform-specific paths
+    if (!arduinoPort) {
+      const possiblePaths = SERIAL_PORT_PATHS[platform] || [];
+      
+      for (const portPath of possiblePaths) {
+        // For exact paths
+        if (!portPath.includes('*') && fs.existsSync(portPath)) {
+          arduinoPort = portPath;
+          console.log(`Found Arduino port by path: ${arduinoPort}`);
+          break;
+        }
+        
+        // For wildcard paths (macOS)
+        if (portPath.includes('*')) {
+          const basePath = path.dirname(portPath);
+          if (fs.existsSync(basePath)) {
+            const pattern = path.basename(portPath).replace('*', '');
+            const files = fs.readdirSync(basePath);
+            
+            for (const file of files) {
+              if (file.startsWith(pattern)) {
+                arduinoPort = path.join(basePath, file);
+                console.log(`Found Arduino port by pattern: ${arduinoPort}`);
+                break;
+              }
+            }
+          }
+        }
+        
+        if (arduinoPort) break;
+      }
+    }
+    
+    // If still not found, use the first available port as a fallback
+    if (!arduinoPort && availablePorts.length > 0) {
+      arduinoPort = availablePorts[0].path;
+      console.log(`No Arduino port found, using first available port: ${arduinoPort}`);
+    }
+    
+    return arduinoPort;
+  } catch (error) {
+    console.error('Error finding Arduino port:', error);
+    return null;
+  }
+}
 
 // Function to setup serial port connection
 async function setupSerialPort() {
   try {
-    console.log(`Connecting to Arduino on ${SERIAL_PORT}...`);
+    // Find Arduino port
+    const portPath = await findArduinoPort();
+    
+    if (!portPath) {
+      console.error('No serial port found. Please connect Arduino and try again.');
+      return false;
+    }
+    
+    console.log(`Connecting to Arduino on ${portPath}...`);
     
     serialPort = new SerialPort({ 
-      path: SERIAL_PORT, 
+      path: portPath, 
       baudRate: BAUD_RATE,
       autoOpen: true
     });
+    
+    // Create parser for line-by-line reading
+    parser = serialPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
 
     serialPort.on('open', () => {
       console.log('Serial port connection established');
     });
 
-    serialPort.on('data', (data) => {
-      console.log(`Arduino: ${data.toString().trim()}`);
+    parser.on('data', (data) => {
+      console.log(`Arduino: ${data.trim()}`);
     });
 
     serialPort.on('error', (err) => {
@@ -134,7 +232,7 @@ async function main() {
   console.log('Starting Solana transaction monitor for fartmachine...');
   console.log(`Contract Address: ${CONTRACT_ADDRESS}`);
   console.log(`Helius RPC URL: ${HELIUS_RPC_URL}`);
-  console.log(`Serial Port: ${SERIAL_PORT}`);
+  console.log(`Platform: ${os.platform()} (${os.arch()})`);
   
   // Setup serial port connection
   const serialConnected = await setupSerialPort();
